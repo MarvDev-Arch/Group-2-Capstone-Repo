@@ -1,106 +1,130 @@
-name: Deploy Invoice Automation
+# .github/workflows/deploy.yml
+# CI/CD for the Group 2 Capstone site
+#   Pull request to main -> build + test the image (no deploy)
+#   Push to main         -> build + test -> push to ACR -> deploy to VM -> smoke test
+
+name: Build and Deploy
 
 on:
-  pull_request:
-    paths: ["invoice-automation.json", "create_invoices_table.sql", ".github/workflows/**"]
   push:
     branches: [main]
-    paths: ["invoice-automation.json", "create_invoices_table.sql", ".github/workflows/**"]
-  workflow_dispatch:
-    inputs:
-      first_deploy:
-        description: "First deploy? (creates Outlook connection + SQL table). Leave false for redeploys so the Outlook authorization is NOT wiped."
-        type: boolean
-        default: false
+  pull_request:
+    branches: [main]
+  workflow_dispatch:        # lets you run it manually from the Actions tab
 
 permissions:
-  id-token: write   # needed for OIDC login to Azure
+  id-token: write           # needed for passwordless (OIDC) login to Azure
   contents: read
 
 env:
-  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
-  LOCATION: ${{ vars.AZURE_LOCATION }}
+  ACR_NAME: group2capstoneih2r1
+  IMAGE: group2capstoneih2r1.azurecr.io/capstone-app
+  RESOURCE_GROUP: group2-capstone-rg
+  VM_NAME: group2-capstone-vm
+  CONTAINER_NAME: myapp
 
 jobs:
-  validate:
-    name: Validate template
+  # ---------------------------------------------------------------
+  # CI: build the image and prove it works before anything ships
+  # ---------------------------------------------------------------
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out code
+        uses: actions/checkout@v4
 
-      - name: Check JSON is well-formed
-        run: python3 -m json.tool invoice-automation.json > /dev/null
+      - name: Build image
+        run: docker build -t capstone-app:test .
 
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Ensure resource group exists
-        run: az group create -n "$RESOURCE_GROUP" -l "$LOCATION" -o none
-
-      - name: Validate deployment against Azure
+      - name: Start container
         run: |
-          az deployment group validate \
-            --resource-group "$RESOURCE_GROUP" \
-            --template-file invoice-automation.json \
-            --parameters \
-              storageAccountName=${{ vars.STORAGE_ACCOUNT_NAME }} \
-              docIntelligenceName=${{ vars.DOC_INTELLIGENCE_NAME }} \
-              sqlServerName=${{ vars.SQL_SERVER_NAME }} \
-              sqlAdminLogin=sqladmin \
-              sqlAdminPassword='${{ secrets.SQL_ADMIN_PASSWORD }}' \
-              approverEmail=${{ vars.APPROVER_EMAIL }} \
-              financeEmail=${{ vars.FINANCE_EMAIL }} \
-              deployOutlookConnection=false
+          docker run -d --name test-app -p 8080:80 capstone-app:test
+          sleep 3
 
+      - name: Test homepage returns 200
+        run: curl -fsS -o /dev/null http://localhost:8080/
+
+      - name: Test Terraform files are NOT in the image
+        run: |
+          for path in infra/terraform.tfvars infra/terraform.tfstate infra/variables.tf; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/$path")
+            echo "$path -> $code"
+            if [ "$code" != "404" ]; then
+              echo "::error::$path is publicly downloadable from the image!"
+              exit 1
+            fi
+          done
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f test-app || true
+
+  # ---------------------------------------------------------------
+  # CD: only on main (not on pull requests)
+  # ---------------------------------------------------------------
   deploy:
-    name: Deploy to Azure
-    needs: validate
+    needs: build-and-test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    environment: production   # add required reviewers in repo settings for a manual gate
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out code
+        uses: actions/checkout@v4
 
-      - uses: azure/login@v2
+      - name: Log in to Azure (OIDC, no passwords)
+        uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy ARM template
+      - name: Build and push image to ACR
         run: |
-          # Redeploys must skip the Outlook connection, otherwise its OAuth token is wiped.
-          DEPLOY_OUTLOOK=${{ github.event.inputs.first_deploy == 'true' && 'true' || 'false' }}
-          az deployment group create \
+          az acr login --name "$ACR_NAME"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to VM
+        run: |
+          SCRIPT=$(cat <<EOF
+          set -e
+          export HOME=/root
+          az login --identity --output none
+          az acr login --name $ACR_NAME
+          docker pull $IMAGE:${{ github.sha }}
+          docker rm -f $CONTAINER_NAME || true
+          docker run -d --name $CONTAINER_NAME --restart unless-stopped -p 80:80 $IMAGE:${{ github.sha }}
+          docker image prune -f
+          echo DEPLOY_OK
+          EOF
+          )
+
+          OUTPUT=$(az vm run-command invoke \
             --resource-group "$RESOURCE_GROUP" \
-            --template-file invoice-automation.json \
-            --parameters \
-              storageAccountName=${{ vars.STORAGE_ACCOUNT_NAME }} \
-              docIntelligenceName=${{ vars.DOC_INTELLIGENCE_NAME }} \
-              sqlServerName=${{ vars.SQL_SERVER_NAME }} \
-              sqlAdminLogin=sqladmin \
-              sqlAdminPassword='${{ secrets.SQL_ADMIN_PASSWORD }}' \
-              approverEmail=${{ vars.APPROVER_EMAIL }} \
-              financeEmail=${{ vars.FINANCE_EMAIL }} \
-              deployOutlookConnection=$DEPLOY_OUTLOOK
+            --name "$VM_NAME" \
+            --command-id RunShellScript \
+            --scripts "$SCRIPT" \
+            --query "value[0].message" -o tsv)
 
-      - name: Create SQL table (first deploy only)
-        if: ${{ github.event.inputs.first_deploy == 'true' }}
-        run: |
-          IP=$(curl -s https://api.ipify.org)
-          az sql server firewall-rule create -g "$RESOURCE_GROUP" -s ${{ vars.SQL_SERVER_NAME }} \
-            -n github-runner --start-ip-address $IP --end-ip-address $IP -o none
-          sudo apt-get install -y -qq mssql-tools18 unixodbc-dev >/dev/null 2>&1 || true
-          /opt/mssql-tools18/bin/sqlcmd -S ${{ vars.SQL_SERVER_NAME }}.database.windows.net \
-            -d InvoiceDb -U sqladmin -P '${{ secrets.SQL_ADMIN_PASSWORD }}' -C \
-            -i create_invoices_table.sql
-          az sql server firewall-rule delete -g "$RESOURCE_GROUP" -s ${{ vars.SQL_SERVER_NAME }} \
-            -n github-runner -y
+          echo "$OUTPUT"
+          echo "$OUTPUT" | grep -q DEPLOY_OK || { echo "::error::Deployment script failed on the VM"; exit 1; }
 
-      - name: Confirm Logic App is enabled
+      - name: Smoke test the live site
         run: |
-          az logic workflow show -g "$RESOURCE_GROUP" -n la-invoice-automation \
-            --query "{name:name,state:state}" -o table
+          IP=$(az vm show -d -g "$RESOURCE_GROUP" -n "$VM_NAME" --query publicIps -o tsv)
+          echo "Testing http://$IP"
+
+          for i in $(seq 1 10); do
+            curl -fsS -o /dev/null "http://$IP/" && break
+            echo "Not ready yet, retrying ($i/10)..."
+            sleep 5
+          done
+          curl -fsS -o /dev/null "http://$IP/"
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' "http://$IP/infra/terraform.tfvars")
+          [ "$code" = "404" ] || { echo "::error::tfvars is exposed on the live site"; exit 1; }
+
+          echo "Live at http://$IP (version ${{ github.sha }})"
