@@ -1,5 +1,19 @@
 .git
 .github
-.terraform
-*.tfstate
-*.tfstate.backup
+.vscode
+
+# Terraform: the whole infra folder plus any stray files anywhere
+infra/
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/.terraform.lock.hcl
+
+# Not needed on the website
+Dockerfile
+.dockerignore
+.gitignore
+README.md
+READ-ME.txt
+LICENSE.txt
