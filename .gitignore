@@ -4,3 +4,9 @@
 *.tfstate.*
 crash.log
 *.tfvars
+
+# Terraform
+infra/terraform.tfvars
+**/*.tfstate
+**/*.tfstate.*
+**/.terraform/
