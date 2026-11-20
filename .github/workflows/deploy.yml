@@ -1,7 +1,8 @@
 # .github/workflows/deploy.yml
 # CI/CD for the Group 2 Capstone site
 #   Pull request to main -> build + test the image (no deploy)
-#   Push to main         -> build + test -> push to ACR -> deploy to VM -> smoke test
+#   Push to main         -> build + test -> push to ACR -> deploy to VM -> HTTPS smoke test
+#   Caddy on the VM serves HTTPS and forwards to the container on 127.0.0.1:8080
 
 name: Build and Deploy
 
@@ -22,6 +23,7 @@ env:
   RESOURCE_GROUP: group2-capstone-rg
   VM_NAME: group2-capstone-vm
   CONTAINER_NAME: myapp
+  SITE_URL: https://group2capstone.name.ng
 
 jobs:
   # ---------------------------------------------------------------
@@ -96,7 +98,7 @@ jobs:
           az acr login --name $ACR_NAME
           docker pull $IMAGE:${{ github.sha }}
           docker rm -f $CONTAINER_NAME || true
-          docker run -d --name $CONTAINER_NAME --restart unless-stopped -p 80:80 $IMAGE:${{ github.sha }}
+          docker run -d --name $CONTAINER_NAME --restart unless-stopped -p 127.0.0.1:8080:80 $IMAGE:${{ github.sha }}
           docker image prune -f
           echo DEPLOY_OK
           EOF
@@ -114,17 +116,15 @@ jobs:
 
       - name: Smoke test the live site
         run: |
-          IP=$(az vm show -d -g "$RESOURCE_GROUP" -n "$VM_NAME" --query publicIps -o tsv)
-          echo "Testing http://$IP"
-
+          echo "Testing $SITE_URL"
           for i in $(seq 1 10); do
-            curl -fsS -o /dev/null "http://$IP/" && break
+            curl -fsS -o /dev/null "$SITE_URL/" && break
             echo "Not ready yet, retrying ($i/10)..."
             sleep 5
           done
-          curl -fsS -o /dev/null "http://$IP/"
+          curl -fsS -o /dev/null "$SITE_URL/"
 
-          code=$(curl -s -o /dev/null -w '%{http_code}' "http://$IP/infra/terraform.tfvars")
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_URL/infra/terraform.tfvars")
           [ "$code" = "404" ] || { echo "::error::tfvars is exposed on the live site"; exit 1; }
 
-          echo "Live at http://$IP (version ${{ github.sha }})"
+          echo "Live at $SITE_URL (version ${{ github.sha }})"

@@ -83,6 +83,18 @@ resource "azurerm_network_security_group" "main" {
     source_address_prefix      = var.admin_cidr
     destination_address_prefix = "*"
   }
+
+  security_rule {
+    name                       = "Allow-HTTPS"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
 }
 
 # Associate NSG with Subnet
@@ -116,12 +128,13 @@ resource "azurerm_network_interface" "main" {
 
 # Azure Container Registry
 resource "azurerm_container_registry" "main" {
-  name                = "group2capstone${random_string.suffix.result}"
+  name                = "group2capstoneih2r1" # fixed so rebuilds keep the same registry name
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   sku                 = "Basic"
   admin_enabled       = false
 }
+
 # Ubuntu Linux Virtual Machine
 resource "azurerm_linux_virtual_machine" "main" {
   name                = "${var.project_name}-vm"
