@@ -438,7 +438,8 @@ From now on, **every push to `main` deploys automatically.**
 | Ifeanyi Akpati (repository owner) | [@MarvDev-Arch](https://github.com/MarvDev-Arch) |
 | Chijioke Emele | [@EmeleCj](https://github.com/EmeleCj) |
 | Emmanuel Idoga | [@Nuelidoga](https://github.com/Nuelidoga) |
-| Odunayo Christiana Shobayo | [@Christianawind](https://github.com/Christianawind) |                                                      | Olatoye Oluwarotimi Ogunjobi | [@olatoyeogunjobi-sudo](https://github.com/olatoyeogunjobi-sudo) |
+| Odunayo Christiana Shobayo | [@Christianawind](https://github.com/Christianawind) |
+| Olatoye Oluwarotimi Ogunjobi | [@olatoyeogunjobi-sudo](https://github.com/olatoyeogunjobi-sudo) |
 | Felix | — |
 
 ## Credits
